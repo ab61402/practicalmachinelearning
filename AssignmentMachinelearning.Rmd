@@ -1,0 +1,169 @@
+---
+title: "Practical Machine Learning Project"
+author: "Andrew Cottrill"
+date: "17 July 2017"
+output:
+  html_document: default
+  pdf_document: default
+---
+**Weight Lifting Exercises using Dumbells and Fitness Trackers**
+=============================================================
+
+**Executive Summary**
+===================
+This study analyses data from a small group of participants lifting dumbells using personal fitness trackers with accelerometers, which have been attached to several parts of the body. There are five modes of dumbell lifting (Class A to Class E); one is correct and four which are incorrect.We use Random Forest and a Generalised Boosted Model to estimate the predictors based on the type of lifting that was performed and use this model to analysis a small sample of 20 observations to estimate the lifting mode.
+
+**Introduction**
+==============
+The information we have used for this study comes from http://groupware.les.inf.puc-rio.br/har and includes lifting a dumbell and measuring how well the activity was performed by the wearer. The exercises were performed by six male participants aged between 20-28 years, with little weight lifting experience. All participants were supervised to simulate the correct and incorrect lifting techniques in a safe and controlled manner using a relatively light dumbbell of 1.25kg.
+
+The six participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). Class A corresponds to the specified (correct) execution of the exercise, while the other 4 classes correspond to the incorrect execution of the exercise. More can be found here: http://groupware.les.inf.puc-rio.br/har#ixzz4n9NiY4hE
+
+The training data for this project are available here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+The test data are available here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+**Load and Clean Data in R**
+============================
+```{r}
+rm(list=ls()) # Download the data from Website
+fileUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv" # Training set
+download.file(fileUrl,destfile = "./TrainingSet.csv")
+fileUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"   # Testing set
+download.file(fileUrl,destfile = "./TestingSet.csv")
+Training <- read.table("TrainingSet.csv", sep=",", header=TRUE, na.strings = c("","#DIV/0!","NA"))
+Testing <- read.table("TestingSet.csv", sep=",", header=TRUE, na.strings = c("","#DIV/0!","NA"))
+```
+If we look at head and tail of both datasets (especially the tail of the Training dataset), it can be seen there are missing samples (blanks), some columns with "#DIV/0!" and many NA in some columns. These must be taken into account. There are 20 observations in the Testing dataset and 19622 observations in the Training dataset, both with 160 variables. The last column in the Training dataset has the 'classe' to be used for modelling and prediction. Look at the Data:
+```{r}
+#head(Training); head(Testing); tail(Testing); tail(Training); str(Training); str(Testing); 
+dim(Training); dim(Testing)
+```
+Head and str commands not shown as they take up so much space. This shows that many columns have NA in the Training and Testing data sets.
+```{r}
+#summary(Testing)
+```
+I have excluded the output above. This shows that many columns have NA in the Testing file. So any analysis using both the Testing and Training datasets require real numeric data for analysis. We can exclude these columns with no data or NAs.A quick count shows we only need to include about 60 variables, not the 160 variables shown. Most of these columns are data type "logical" so we can exclude all of these columns immediately.
+
+**Subset data and remove columns with data type "logical." This will result in about 60 variables:**
+```{r}
+newTesting <- Testing[sapply(Testing, class) != "logical"]  #60 obs correct
+newTraining <- Training[sapply(Testing, class) != "logical"] # 60 obs
+dim(newTraining); dim(newTesting)
+```
+So now we have only 60 variables in both datasets. We can also delete six more variables including: column 1(X), col2(user_name), col3(raw_timestamp_part_1), col4(raw_timestamp_part_2), col5(cvtd_timestamp), col6(new_window) and col7(num_window). We don't need them for the analysis.
+```{r}
+newTrainingset  <- newTraining[,-c(1:7)]; newTestingset <- newTesting[,-c(1:7)]
+dim(newTrainingset); dim(newTestingset)
+```
+Now we have only 53 variables in each dataset.This will make the modelling algorithm work much faster.The data is now ready for further analysis. We need to split the training set into two datasets: one for training and one for testing purposes. Also we need to load some libraries.Set the seed to make the results reproducible.
+
+**Now Make training and testing datasets**
+```{r, message=FALSE, warning=FALSE}
+library(caret) ;library(AppliedPredictiveModeling); set.seed(5558)
+inTrain = createDataPartition(newTrainingset$classe, p = 0.75, list=FALSE)
+training = newTrainingset[inTrain,]; testing = newTrainingset[-inTrain,]
+dim(training); dim(testing)
+```
+So the training dataset has 14718 observations and the testing dataset 4904 observations.
+
+**Basic Exploratory Analysis using the Training Dataset**
+====================================================
+Plot the basic data from the 'classe' column (A, B, C, D and E). A is the correct training method.
+```{r,fig.height=3, fig.width=5 }
+plot(training$classe, col="red", main="Five Classes of Weight Training", xlab="Class", 
+     ylab="Frequency"); summary(training$classe)
+```
+This plot and summary shows there is a fairly equal spread in the frequency from each of the 5 classes.
+
+**Now load more Libraries for Modelling and Prediction**
+```{r, message=FALSE,warning=FALSE}
+library(AppliedPredictiveModeling); library(caret); library(pgmm); library(rpart); 
+library(gbm); library(randomForest)
+```
+
+**Cross Validation, Modelling and Prediction**
+============================================
+Generally random forest and generalised boosted models provide some of the best results when using a large number of variables. However, the more noise in the data, the worse random forest models may perform relative to gradient boosting. 
+
+**Improving Performance of Random Forest in caret::train()**
+According to the docmentation online, we need to run Random Forest using the provided code, otherwise processing takes too long. I first ran the model without this information, but it did not finish even after 45 minutes. Using the method below the Random Forest analysis was completed in around ten minutes.
+(https://github.com/lgreski/datasciencectacontent/blob/master/markdown/pml-randomForestPerformance.md)
+We need to use also parallel and doParallel packages.....Step 1: Configure parallel processing
+```{r, message=FALSE, warning=FALSE}
+library(parallel); library(doParallel)
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+```
+Step 2: Configure trainControl object:
+```{r}
+fitControl <- trainControl(method = "cv", number = 10, allowParallel = TRUE)
+```
+Step 3: Develop training model using Random Forest:
+```{r}
+# set up training run for x / y syntax because model format performs poorly
+set.seed(1125); TrainData <- training[,1:52] ;TrainClasses <- training[,53]
+fit <- train(TrainData,TrainClasses, method="rf", data=training, trControl = fitControl)
+```
+Step 4: De-register parallel processing cluster:
+```{r}
+stopCluster(cluster); registerDoSEQ()
+```
+
+**Predict and check Random Forest model Accuracy on test set**
+```{r}
+predictRF <- predict(fit,testing)# confusionMatrix(predictRF, testing$classe)
+confusionMatrix(predictRF, testing$classe)$overall['Accuracy']
+```
+We only show the 'Accuracy' for the Random Forest model, as the printout is too long here. The 'Accuracy'is 0.9949 and with 95% CI: (0.9925, 0.9967). The accuracy of the model is 0.995 and therefore the out-of-sample error is ~ 0.005 or 0.5%. The expected out-of-sample error is calculated as 1-accuracy for predictions made against the cross-validation set. 
+
+A minimum accuracy is required from the model for it to be successful in the predicting the Classes (A to E) for the 20 samples. This is described in detail here, which was posted in the Machine Learning discussion forum: https://github.com/lgreski/datasciencectacontent/blob/master/markdown/pml-requiredModelAccuracy.md
+
+We need a very high accuracy in the model to get a good test score in the Quiz. For example: Using a model accuracy of 0.900, we only have a low probability of 0.1216 Predicting 20 out of 20.Using a model accuracy of 0.950, we only have a low probability of 0.3585 Predicting 20 out of 20.Using a model accuracy of 0.995, we have a much higher probability of 0.9046 of Predicting 20 out of 20.Our Random Forest has very good accuracy (0.9949).
+
+**Plot the Random Forest Model**
+```{r,fig.height=3, fig.width=5 }
+plot(fit$finalModel, main="Random Forest")
+```
+
+The Random Forest plot shows the error is close to a minimum after about 100 trees are made. 
+
+**Build a Generalised Boosted Model**
+```{r}
+set.seed(1125);
+fitControl <- trainControl(method = "repeatedcv", number = 5, allowParallel = TRUE, repeats = 1)
+fit2 <- train(classe ~ ., method = "gbm", data = training, trControl = fitControl, verbose = FALSE)
+```
+
+**Predict and check GBM Accuracy on test set**
+```{r}
+predictGBM <- predict(fit2, testing); 
+confusionMatrix(predictGBM, testing$classe)$overall['Accuracy']
+```
+This shows the GBM has an accuracy of 0.96228, which is lightly lower than the Random Forest accuracy. Therefore we will use the Random Forest model to predict the 20 test cases below.
+
+**Predicting the 20 test cases using the Random Forest Model**
+```{r}
+testcases <- predict(fit, newTestingset, type="raw"); testcases
+```
+This shows the classes calculated from the Random Forest model for each observation in the 20 samples test set. 
+We also used the information here to correctly configure the Github Pages.
+https://github.com/lgreski/datasciencectacontent/blob/master/markdown/pml-ghPagesSetup.md
+
+**Summary and Conclusions**
+=========================
+This study analysed data from a small group of participants using dumbells and personal fitness trackers and accelerometers to identify five different classes of weight training in a test set. We used the training set to build a model after data cleaning and Random Forest and a Generalised Boosted Model to estimate the predictors. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. This shows it is possible to identify correct weight training techniques by participants or sports people and apply corrections to improve performance. This can be applied to many other sporting and physical activites and could have many human health benefits.
+
+**Citation:**
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+
+
+
+
+
+
+
+
+
+
+
